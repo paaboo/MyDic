@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import ServiceManagement
 import SwiftUI
 
 struct SearchSettingsView: View {
@@ -8,6 +9,8 @@ struct SearchSettingsView: View {
         case size = "창 크기"
         case shortcut = "단축키"
         case history = "검색 기록"
+        case webLogin = "웹 로그인"
+        case startup = "자동 실행"
 
         var id: Self { self }
     }
@@ -16,6 +19,7 @@ struct SearchSettingsView: View {
     let onShortcutChange: (Shortcut) -> Bool
     let onHistorySelection: (SearchHistory.Entry) -> Void
     let onClose: () -> Void
+    let onQuit: () -> Void
 
     @State private var section: Section?
     @State private var home: Dictionary = .english
@@ -25,6 +29,11 @@ struct SearchSettingsView: View {
     @State private var shortcutError: String?
     @State private var keyMonitor: Any?
     @State private var copied = false
+    @State private var clearDataConfirmation = false
+    @State private var clearingData = false
+    @State private var clearedData = false
+    @State private var startupStatus = SMAppService.mainApp.status
+    @State private var startupError: String?
 
     private var validSize: SearchState.WindowSize? {
         guard let width = Int(width), let height = Int(height),
@@ -56,6 +65,8 @@ struct SearchSettingsView: View {
                     case .size: sizeSettings
                     case .shortcut: shortcutSettings
                     case .history: historySettings
+                    case .webLogin: webLoginSettings
+                    case .startup: startupSettings
                     }
                     if section == nil,
                        let copyright = Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String {
@@ -74,22 +85,93 @@ struct SearchSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSPopover.didCloseNotification)) { _ in
             stopRecording()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            startupStatus = SMAppService.mainApp.status
+        }
     }
 
     private var sections: some View {
-        ForEach(Section.allCases) { section in
-            Button { show(section) } label: {
-                HStack {
-                    Text(section.rawValue)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Section.allCases) { section in
+                Button { show(section) } label: {
+                    HStack {
+                        Text(section.rawValue)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
                 }
-                .padding(10)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            Divider()
+            Button("MyDic 종료", action: onQuit)
+                .keyboardShortcut("q", modifiers: .command)
         }
+    }
+
+    private var webLoginSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("로그인 유지", isOn: Binding(
+                get: { search.remembersWebLogin },
+                set: { search.setRemembersWebLogin($0) }
+            ))
+            .disabled(clearingData)
+            Text("켜면 지원되는 사이트의 로그인 쿠키를 이 Mac에 저장합니다. 꺼도 이전에 저장한 데이터는 직접 삭제할 수 있습니다.")
+                .foregroundStyle(.secondary)
+            Button("저장된 웹 데이터 삭제", role: .destructive) { clearDataConfirmation = true }
+                .disabled(clearingData)
+                .confirmationDialog("저장된 웹 데이터를 삭제할까요?", isPresented: $clearDataConfirmation) {
+                    Button("삭제", role: .destructive) {
+                        clearingData = true
+                        Task {
+                            await search.clearWebsiteData()
+                            clearingData = false
+                            clearedData = true
+                        }
+                    }
+                } message: {
+                    Text("MyDic에 저장된 사이트의 로그인 쿠키와 캐시가 삭제됩니다.")
+                }
+            if clearingData {
+                ProgressView()
+            } else if clearedData {
+                Text("저장된 웹 데이터를 삭제했습니다.").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var startupSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Mac 로그인 시 자동 실행", isOn: Binding(
+                get: { startupStatus == .enabled || startupStatus == .requiresApproval },
+                set: updateStartup
+            ))
+            if startupStatus == .requiresApproval {
+                Text("시스템 설정의 로그인 항목에서 MyDic을 허용하세요.")
+                    .foregroundStyle(.secondary)
+                Button("로그인 항목 열기") { SMAppService.openSystemSettingsLoginItems() }
+            }
+            if let startupError {
+                Text(startupError).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func updateStartup(_ enabled: Bool) {
+        let service = SMAppService.mainApp
+        startupError = nil
+        do {
+            if enabled {
+                try service.register()
+            } else {
+                try service.unregister()
+            }
+        } catch {
+            startupError = error.localizedDescription
+        }
+        startupStatus = service.status
     }
 
     private var homeSettings: some View {
@@ -207,6 +289,9 @@ struct SearchSettingsView: View {
         shortcut = search.shortcut
         shortcutError = nil
         copied = false
+        clearedData = false
+        startupStatus = SMAppService.mainApp.status
+        startupError = nil
         self.section = section
     }
 

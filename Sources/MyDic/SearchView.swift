@@ -26,6 +26,7 @@ final class SearchState: ObservableObject {
     @Published private(set) var windowSize: WindowSize
     @Published private(set) var shortcut: Shortcut
     @Published private(set) var history: SearchHistory
+    @Published private(set) var remembersWebLogin = UserDefaults.standard.bool(forKey: "remembersWebLogin")
     private var submittedQuery: String?
 
     init() {
@@ -61,6 +62,18 @@ final class SearchState: ObservableObject {
         close()
         query = ""
         select(homeDictionary)
+    }
+
+    func setRemembersWebLogin(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "remembersWebLogin")
+        remembersWebLogin = enabled
+    }
+
+    func clearWebsiteData() async {
+        close()
+        await WKWebsiteDataStore.default().removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast
+        )
     }
 
     func select(_ dictionary: Dictionary) {
@@ -145,7 +158,8 @@ struct SearchView: View {
 
             Divider()
             if let lookup = search.lookup {
-                ResultView(lookup: lookup)
+                ResultView(lookup: lookup, remembersWebLogin: search.remembersWebLogin)
+                    .id(search.remembersWebLogin)
             } else {
                 VStack(spacing: 7) {
                     Text("예시 검색어")
@@ -172,9 +186,6 @@ struct SearchView: View {
                 Button("설정") { showingSettings = true }
                     .buttonStyle(.link)
                     .keyboardShortcut(",", modifiers: .command)
-                Button("종료", action: onQuit)
-                    .buttonStyle(.link)
-                    .keyboardShortcut("q", modifiers: .command)
             }
             .font(.caption)
             .padding(10)
@@ -191,7 +202,8 @@ struct SearchView: View {
                         showingSettings = false
                         search.reopen(entry)
                     },
-                    onClose: { showingSettings = false }
+                    onClose: { showingSettings = false },
+                    onQuit: onQuit
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.background)
@@ -264,13 +276,17 @@ struct SearchView: View {
 
 private struct ResultView: View {
     let lookup: SearchState.Lookup
+    let remembersWebLogin: Bool
     @State private var loading = true
     @State private var failed = false
     @State private var retry = 0
 
     var body: some View {
         ZStack {
-            ResultWebView(lookup: lookup, retry: retry, loading: $loading, failed: $failed)
+            ResultWebView(
+                lookup: lookup, retry: retry, remembersWebLogin: remembersWebLogin,
+                loading: $loading, failed: $failed
+            )
             if loading {
                 ProgressView("불러오는 중…")
                     .padding(14)
@@ -291,6 +307,7 @@ private struct ResultView: View {
 private struct ResultWebView: NSViewRepresentable {
     let lookup: SearchState.Lookup
     let retry: Int
+    let remembersWebLogin: Bool
     @Binding var loading: Bool
     @Binding var failed: Bool
 
@@ -298,28 +315,34 @@ private struct ResultWebView: NSViewRepresentable {
         Coordinator(loading: $loading, failed: $failed)
     }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> ResultWebContainer {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = remembersWebLogin ? .default() : .nonPersistent()
         configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         let view = WKWebView(frame: .zero, configuration: configuration)
         // Providers that select a layout on the server need a mobile user agent.
         view.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
-        return view
+        let container = ResultWebContainer(webView: view)
+        context.coordinator.container = container
+        return container
     }
 
-    func updateNSView(_ view: WKWebView, context: Context) {
+    func updateNSView(_ container: ResultWebContainer, context: Context) {
         let coordinator = context.coordinator
         guard coordinator.lookup != lookup || coordinator.retry != retry else { return }
+        container.dismissLogin(reload: false)
         coordinator.lookup = lookup
         coordinator.retry = retry
+        let view = container.webView
         view.stopLoading()
         view.load(URLRequest(url: lookup.url, timeoutInterval: 20))
     }
 
-    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ container: ResultWebContainer, coordinator: Coordinator) {
+        container.dismissLogin(reload: false)
+        let view = container.webView
         view.navigationDelegate = nil
         view.uiDelegate = nil
         view.stopLoading()
@@ -330,6 +353,7 @@ private struct ResultWebView: NSViewRepresentable {
         @Binding var failed: Bool
         var lookup: SearchState.Lookup?
         var retry = 0
+        weak var container: ResultWebContainer?
         private var activeNavigation: WKNavigation?
 
         init(loading: Binding<Bool>, failed: Binding<Bool>) {
@@ -369,10 +393,85 @@ private struct ResultWebView: NSViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if let url = navigationAction.request.url, url.scheme == "https" {
-                webView.load(navigationAction.request)
+            guard let url = navigationAction.request.url, url.scheme == "https" else { return nil }
+            if url.host == "nid.naver.com",
+               let origin = navigationAction.sourceFrame.request.url,
+               origin.scheme == "https",
+               let host = origin.host,
+               ["en.dict.naver.com", "ko.dict.naver.com", "hanja.dict.naver.com"].contains(host)
+            {
+                return container?.showLogin(configuration: configuration, delegate: self)
             }
+            webView.load(navigationAction.request)
             return nil
         }
+
+        func webViewDidClose(_ webView: WKWebView) {
+            if container?.loginWebView === webView {
+                container?.dismissLogin(reload: true)
+            }
+        }
+    }
+}
+
+private final class ResultWebContainer: NSView {
+    let webView: WKWebView
+    private(set) var loginWebView: WKWebView?
+    private var loginPanel: NSStackView?
+
+    init(webView: WKWebView) {
+        self.webView = webView
+        super.init(frame: .zero)
+        fill(with: webView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    func showLogin(configuration: WKWebViewConfiguration, delegate: WKUIDelegate) -> WKWebView {
+        dismissLogin(reload: false)
+        // WebKit supplies the popup configuration with the originating data store.
+        let popup = WKWebView(frame: .zero, configuration: configuration)
+        popup.customUserAgent = webView.customUserAgent
+        popup.uiDelegate = delegate
+        let back = NSButton(title: "사전으로 돌아가기", target: self, action: #selector(closeLogin))
+        let panel = NSStackView(views: [back, popup])
+        panel.orientation = .vertical
+        panel.spacing = 6
+        panel.alignment = .leading
+        panel.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 0, right: 8)
+        webView.isHidden = true
+        loginWebView = popup
+        loginPanel = panel
+        fill(with: panel)
+        popup.widthAnchor.constraint(equalTo: panel.widthAnchor, constant: -16).isActive = true
+        window?.makeFirstResponder(popup)
+        return popup
+    }
+
+    func dismissLogin(reload: Bool) {
+        guard let loginWebView else { return }
+        loginWebView.uiDelegate = nil
+        loginWebView.stopLoading()
+        loginPanel?.removeFromSuperview()
+        self.loginWebView = nil
+        loginPanel = nil
+        webView.isHidden = false
+        if reload { webView.reload() }
+    }
+
+    @objc private func closeLogin() {
+        dismissLogin(reload: true)
+    }
+
+    private func fill(with view: NSView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
     }
 }
