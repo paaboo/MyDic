@@ -1,8 +1,16 @@
 # MyDic
 
-Swift로 만든 macOS 메뉴바 사전입니다. macOS 14 이상과 Xcode의 Swift 도구가 필요합니다.
+Swift로 만든 macOS 메뉴바 사전입니다. macOS 14 이상을 지원합니다.
+
+## 다운로드
+
+[MyDic 0.7 다운로드](https://github.com/paaboo/MyDic/releases/download/v0.7/MyDic-0.7-macOS.zip)
+
+ZIP을 풀고 `MyDic.app`을 **응용 프로그램** 폴더로 옮겨 실행합니다. Apple Silicon 및 Intel Mac을 지원합니다. 이 버전은 Apple 공증을 받지 않아 macOS가 첫 실행을 차단할 수 있습니다. 이 경우 [Apple의 확인되지 않은 앱 열기 안내](https://support.apple.com/guide/mac-help/mh40616/mac)를 참고하세요.
 
 ## 빌드 및 실행
+
+소스에서 직접 빌드하려면 Xcode의 Swift 도구가 필요합니다. Apple Silicon과 Intel용 바이너리가 모두 필요한 경우 `./Scripts/build-app.sh --universal`을 사용합니다.
 
 ```sh
 ./Scripts/build-app.sh

@@ -26,6 +26,10 @@ struct SearchHistory: Codable {
         if entries.count > 100 { entries.removeLast(entries.count - 100) }
     }
 
+    mutating func remove(ids: Set<UUID>) {
+        entries.removeAll { ids.contains($0.id) }
+    }
+
     func jsonData() throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

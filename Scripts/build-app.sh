@@ -2,12 +2,31 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-build_directory="$(swift build -c release "$@" --show-bin-path)"
-swift build -c release "$@"
+universal=false
+if [[ "${1:-}" == "--universal" ]]; then
+    universal=true
+    shift
+fi
 
 app="dist/MyDic.app"
 mkdir -p "$app/Contents/MacOS"
-install -m 755 "$build_directory/MyDic" "$app/Contents/MacOS/MyDic"
+executable="$app/Contents/MacOS/MyDic"
+
+if $universal; then
+    binaries=()
+    for arch in arm64 x86_64; do
+        build_args=(--arch "$arch" --scratch-path ".build/$arch" "$@")
+        swift build -c release "${build_args[@]}"
+        build_directory="$(swift build -c release "${build_args[@]}" --show-bin-path)"
+        binaries+=("$build_directory/MyDic")
+    done
+    lipo -create "${binaries[@]}" -output "$executable"
+    chmod 755 "$executable"
+else
+    swift build -c release "$@"
+    build_directory="$(swift build -c release "$@" --show-bin-path)"
+    install -m 755 "$build_directory/MyDic" "$executable"
+fi
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,9 +42,9 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.7</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>7</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 redinboo (redinboo@gmail.com)</string>
     <key>LSMinimumSystemVersion</key>

@@ -97,6 +97,16 @@ final class SearchState: ObservableObject {
         submit()
     }
 
+    func clearSearchHistory() {
+        history = SearchHistory()
+        persistSearchHistory()
+    }
+
+    func deleteSearchHistory(ids: Set<UUID>) {
+        history.remove(ids: ids)
+        persistSearchHistory()
+    }
+
     func close() {
         lookup = nil
         submittedQuery = nil
@@ -106,7 +116,13 @@ final class SearchState: ObservableObject {
         guard let url = dictionary.searchURL(for: term) else { return }
         lookup = Lookup(url: url)
         history.record(term, category: dictionary, sourceURL: url)
-        if let data = try? history.jsonData() {
+        persistSearchHistory()
+    }
+
+    private func persistSearchHistory() {
+        if history.entries.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "searchHistory")
+        } else if let data = try? history.jsonData() {
             UserDefaults.standard.set(data, forKey: "searchHistory")
         }
     }

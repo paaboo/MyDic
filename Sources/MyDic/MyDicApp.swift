@@ -25,7 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem = item
-        item.button?.image = NSImage(systemSymbolName: "book.closed", accessibilityDescription: "MyDic")
+        item.button?.image = Self.makeStatusIcon()
+        item.button?.setAccessibilityLabel("MyDic")
         item.button?.target = self
         item.button?.action = #selector(toggle)
         hotKey.action = { [weak self] in self?.toggle() }
@@ -36,6 +37,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotKey.unregister()
+    }
+
+    private static func makeStatusIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { bounds in
+            NSColor.black.setStroke()
+            let cover = NSBezierPath(
+                roundedRect: NSRect(x: 1.75, y: 1.5, width: 14.5, height: 15),
+                xRadius: 2.5, yRadius: 2.5
+            )
+            cover.lineWidth = 1.4
+            cover.stroke()
+
+            let pageEdge = NSBezierPath()
+            pageEdge.move(to: NSPoint(x: 2.2, y: 4.3))
+            pageEdge.line(to: NSPoint(x: 15.8, y: 4.3))
+            pageEdge.lineWidth = 1.15
+            pageEdge.stroke()
+
+            let lettering = NSAttributedString(string: "Aa", attributes: [
+                .font: NSFont(name: "Georgia-Bold", size: 9.5) ?? NSFont.boldSystemFont(ofSize: 9.5),
+                .foregroundColor: NSColor.black
+            ])
+            lettering.draw(at: NSPoint(x: bounds.midX - lettering.size().width / 2, y: 4.1))
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 
     @objc private func toggle() {

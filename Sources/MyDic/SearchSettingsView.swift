@@ -29,6 +29,8 @@ struct SearchSettingsView: View {
     @State private var shortcutError: String?
     @State private var keyMonitor: Any?
     @State private var copied = false
+    @State private var confirmHistoryDeletion = false
+    @State private var selectedHistoryIDs: Set<UUID> = []
     @State private var clearDataConfirmation = false
     @State private var clearingData = false
     @State private var clearedData = false
@@ -192,11 +194,11 @@ struct SearchSettingsView: View {
     private var sizeSettings: some View {
         VStack(alignment: .leading, spacing: 16) {
             Form {
-                TextField("가로 (pt)", text: $width)
-                TextField("세로 (pt)", text: $height)
+                TextField("가로 (px)", text: $width)
+                TextField("세로 (px)", text: $height)
             }
             if validSize == nil {
-                Text("가로 440–1600pt, 세로 300–1400pt 범위의 정수를 입력하세요.")
+                Text("가로 440–1600px, 세로 300–1400px 범위의 정수를 입력하세요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -249,11 +251,34 @@ struct SearchSettingsView: View {
 
     private var historySettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button(copied ? "복사됨" : "JSON 복사") {
-                guard let data = try? search.history.jsonData(),
-                      let json = String(data: data, encoding: .utf8) else { return }
-                NSPasteboard.general.clearContents()
-                copied = NSPasteboard.general.setString(json, forType: .string)
+            HStack {
+                Button(copied ? "복사됨" : "JSON 복사") {
+                    guard let data = try? search.history.jsonData(),
+                          let json = String(data: data, encoding: .utf8) else { return }
+                    NSPasteboard.general.clearContents()
+                    copied = NSPasteboard.general.setString(json, forType: .string)
+                }
+                Spacer()
+                Button("선택 삭제", role: .destructive) {
+                    search.deleteSearchHistory(ids: selectedHistoryIDs)
+                    selectedHistoryIDs.removeAll()
+                    copied = false
+                }
+                .disabled(selectedHistoryIDs.isEmpty)
+                Button(role: .destructive) {
+                    confirmHistoryDeletion = true
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("검색 기록 전체 삭제")
+                .help("검색 기록 전체 삭제")
+                .confirmationDialog("검색 기록을 모두 삭제할까요?", isPresented: $confirmHistoryDeletion) {
+                    Button("전체 삭제", role: .destructive) {
+                        search.clearSearchHistory()
+                        selectedHistoryIDs.removeAll()
+                        copied = false
+                    }
+                }
             }
             .disabled(search.history.entries.isEmpty)
             if search.history.entries.isEmpty {
@@ -261,21 +286,35 @@ struct SearchSettingsView: View {
             }
             LazyVStack(alignment: .leading, spacing: 8) {
                 ForEach(search.history.entries) { entry in
-                    Button {
-                        onHistorySelection(entry)
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(entry.keyword).lineLimit(1)
-                                Text(entry.searchedAt, format: .dateTime.year().month().day().hour().minute())
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Toggle("선택: \(entry.keyword), \(entry.category.rawValue)", isOn: Binding(
+                            get: { selectedHistoryIDs.contains(entry.id) },
+                            set: { selected in
+                                if selected {
+                                    selectedHistoryIDs.insert(entry.id)
+                                } else {
+                                    selectedHistoryIDs.remove(entry.id)
+                                }
                             }
-                            Spacer()
-                            Text(entry.category.rawValue).foregroundStyle(.secondary)
+                        ))
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
+                        Button {
+                            onHistorySelection(entry)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(entry.keyword).lineLimit(1)
+                                    Text(entry.searchedAt, format: .dateTime.year().month().day().hour().minute())
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(entry.category.rawValue).foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.link)
                     }
-                    .buttonStyle(.link)
                 }
             }
         }
@@ -289,6 +328,7 @@ struct SearchSettingsView: View {
         shortcut = search.shortcut
         shortcutError = nil
         copied = false
+        selectedHistoryIDs.removeAll()
         clearedData = false
         startupStatus = SMAppService.mainApp.status
         startupError = nil
