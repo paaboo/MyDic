@@ -4,6 +4,9 @@ import WebKit
 
 @MainActor
 final class SearchState: ObservableObject {
+    let savedTerms = SavedTerms()
+    @Published var termEditor: TermEditor?
+    @Published var selectionMessage: String?
     struct WindowSize: Equatable {
         static let widthRange = 440...1600
         static let heightRange = 300...1400
@@ -30,10 +33,10 @@ final class SearchState: ObservableObject {
     private var submittedQuery: String?
 
     init() {
-        let stored = UserDefaults.standard.string(forKey: "selectedDictionary")
-        dictionary = stored.flatMap(Dictionary.init(rawValue:)) ?? .english
-        homeDictionary = UserDefaults.standard.string(forKey: "homeDictionary")
-            .flatMap(Dictionary.init(rawValue:)) ?? .english
+        let home = UserDefaults.standard.string(forKey: "homeDictionary")
+            .flatMap(Dictionary.init(rawValue:)) ?? .chatGPT
+        homeDictionary = home
+        dictionary = home
         shortcut = Shortcut.load(from: UserDefaults.standard.data(forKey: "shortcut"))
         history = SearchHistory.load(from: UserDefaults.standard.data(forKey: "searchHistory"))
         let width = UserDefaults.standard.integer(forKey: "windowWidth")
@@ -62,6 +65,12 @@ final class SearchState: ObservableObject {
         close()
         query = ""
         select(homeDictionary)
+        lookup = Lookup(url: dictionary.homeURL)
+    }
+
+    func prepareToOpen() {
+        guard lookup == nil else { return }
+        select(homeDictionary)
     }
 
     func setRemembersWebLogin(_ enabled: Bool) {
@@ -77,10 +86,13 @@ final class SearchState: ObservableObject {
     }
 
     func select(_ dictionary: Dictionary) {
-        guard self.dictionary != dictionary else { return }
         self.dictionary = dictionary
         UserDefaults.standard.set(dictionary.rawValue, forKey: "selectedDictionary")
-        if let submittedQuery { load(submittedQuery) }
+        if let submittedQuery {
+            load(submittedQuery)
+        } else {
+            lookup = Lookup(url: dictionary.homeURL)
+        }
     }
 
     func submit() {
@@ -95,6 +107,18 @@ final class SearchState: ObservableObject {
         select(entry.category)
         query = entry.keyword
         submit()
+    }
+
+    func editCurrentTerm() {
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return }
+        let existing = savedTerms.entries.first {
+            $0.keyword.caseInsensitiveCompare(keyword) == .orderedSame && $0.category == dictionary
+        }
+        termEditor = TermEditor(term: existing ?? SavedTerm(
+            id: UUID(), keyword: keyword, meaning: "", memo: "", category: dictionary,
+            sourceURL: dictionary.searchURL(for: keyword) ?? dictionary.homeURL, updatedAt: .now
+        ))
     }
 
     func clearSearchHistory() {
@@ -114,6 +138,13 @@ final class SearchState: ObservableObject {
 
     private func load(_ term: String) {
         guard let url = dictionary.searchURL(for: term) else { return }
+        if dictionary == .gemini {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(term, forType: .string)
+            selectionMessage = "검색어를 복사했습니다. Gemini 입력창에 붙여넣어 전송하세요."
+        } else {
+            selectionMessage = nil
+        }
         lookup = Lookup(url: url)
         history.record(term, category: dictionary, sourceURL: url)
         persistSearchHistory()
@@ -156,8 +187,34 @@ struct SearchView: View {
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
                         .onSubmit(search.submit)
+                    if !search.query.isEmpty {
+                        Button {
+                            search.query = ""
+                            searchFocused = true
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("검색어 지우기")
+                        .help("검색어 지우기")
+                    }
                     Button("검색", action: search.submit)
                         .disabled(search.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button { search.editCurrentTerm() } label: {
+                        Image(systemName: "bookmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help("용어 저장")
+                    .accessibilityLabel("용어 저장")
+                    .disabled(search.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button { showingSettings = true } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("설정")
+                    .help("설정")
+                    .keyboardShortcut(",", modifiers: .command)
                 }
                 .padding(9)
                 .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
@@ -199,9 +256,7 @@ struct SearchView: View {
                 Link(search.dictionary.source, destination: search.lookup?.url ?? search.dictionary.homeURL)
                     .help("브라우저에서 열기")
                 Spacer()
-                Button("설정") { showingSettings = true }
-                    .buttonStyle(.link)
-                    .keyboardShortcut(",", modifiers: .command)
+                Link("개발문의 : redinboo@gmail.com", destination: URL(string: "mailto:redinboo@gmail.com")!)
             }
             .font(.caption)
             .padding(10)
@@ -226,6 +281,12 @@ struct SearchView: View {
             }
         }
         .frame(width: search.windowSize.contentSize.width, height: search.windowSize.contentSize.height)
+        .overlay {
+            if let editor = search.termEditor {
+                TermEditorView(store: search.savedTerms, term: editor.term, onClose: { search.termEditor = nil })
+                    .id(editor.id)
+            }
+        }
         .onAppear { searchFocused = true }
         .onChange(of: search.focusRequest) { _, _ in
             showingSettings = false
@@ -276,7 +337,7 @@ struct SearchView: View {
                                 Text(dictionary.rawValue)
                             }
                         }
-                        .keyboardShortcut(KeyEquivalent(Character(String(visibleCategories.count + index + 1))), modifiers: .command)
+                        .keyboardShortcut(overflowShortcut(index))
                     }
                 } label: {
                     Text("더보기")
@@ -287,6 +348,11 @@ struct SearchView: View {
                 .id(firstOverflow)
             }
         }
+    }
+
+    private func overflowShortcut(_ index: Int) -> KeyboardShortcut? {
+        let number = visibleCategories.count + index + 1
+        return number <= 9 ? KeyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command) : nil
     }
 }
 
@@ -335,6 +401,86 @@ private struct ResultWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = remembersWebLogin ? .default() : .nonPersistent()
         configuration.defaultWebpagePreferences.preferredContentMode = .mobile
+        let hideLogin = WKUserScript(source: """
+            (() => {
+                if (location.hostname !== 'chatgpt.com') return;
+                const style = document.createElement('style');
+                style.textContent = `
+                    header [data-testid="login-button"],
+                    header a[href^="/auth/login"],
+                    header a[href^="https://chatgpt.com/auth/login"],
+                    [data-testid="login-button"] { display: none !important; }
+                `;
+                document.documentElement.appendChild(style);
+                const hide = () => {
+                    const signupButtons = document.querySelectorAll('button, a');
+                    for (const button of signupButtons) {
+                        if (!/^(무료로 회원가입|무료 회원가입|Sign up for free)$/i.test((button.textContent || '').trim())) continue;
+                        // Match the promotional card by its copy, without hiding chat messages.
+                        let card = button.parentElement;
+                        for (let depth = 0; card && depth < 5; depth++, card = card.parentElement) {
+                            if (card.matches('main, body, form, [role="dialog"], [data-message-author-role]')) break;
+                            const text = card.textContent || '';
+                            const matchesCopy = /이 채팅을 저장하려면|to save this chat|save (?:your|this) (?:chat|conversation)/i.test(text);
+                            if (matchesCopy && text.length < 1200 &&
+                                !card.querySelector('[data-message-author-role], [contenteditable="true"], textarea')) {
+                                card.style.setProperty('display', 'none', 'important');
+                                break;
+                            }
+                        }
+                    }
+                    const elements = document.querySelectorAll(
+                        'header button, header a, [role="banner"] button, [role="banner"] a, button[data-testid="login-button"], a[href*="/auth/login"]'
+                    );
+                    // Some versions of the guest page render its top controls outside a header.
+                    const candidates = new Set([...elements, ...document.querySelectorAll('button')]);
+                    for (const element of candidates) {
+                        if (!/^(로그인|Log in|Login|Sign in)$/i.test((element.textContent || '').trim())) continue;
+                        if (element.closest('[role="dialog"], [aria-modal="true"], form')) continue;
+                        element.style.setProperty('display', 'none', 'important');
+                        requestAnimationFrame(() => {
+                            if (element.isConnected && element.getClientRects().length > 0) element.remove();
+                        });
+                    }
+                };
+                let pending = false;
+                new MutationObserver(() => {
+                    if (pending) return;
+                    pending = true;
+                    requestAnimationFrame(() => { pending = false; hide(); });
+                }).observe(document.documentElement, { childList: true, subtree: true });
+                hide();
+            })();
+            """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        configuration.userContentController.addUserScript(hideLogin)
+        let acceptCookies = WKUserScript(source: """
+            (() => {
+                if (location.hostname !== 'chatgpt.com') return;
+                const accept = () => {
+                    const choices = document.querySelectorAll(
+                        '[role="dialog"] button, [aria-modal="true"] button, #onetrust-banner-sdk button'
+                    );
+                    for (const button of choices) {
+                        const text = (button.textContent || '').trim();
+                        if (!/^(모두 허용|모두 수락|Accept all|Allow all|Accept all cookies)$/i.test(text)) continue;
+                        const dialog = button.closest('[role="dialog"], [aria-modal="true"], #onetrust-banner-sdk');
+                        if (!dialog || !/쿠키|cookies?/i.test(dialog.textContent || '')) continue;
+                        if (button.disabled || button.getClientRects().length === 0) continue;
+                        button.click();
+                        return;
+                    }
+                };
+                let scheduled = false;
+                const observer = new MutationObserver(() => {
+                    if (scheduled) return;
+                    scheduled = true;
+                    requestAnimationFrame(() => { scheduled = false; accept(); });
+                });
+                observer.observe(document.documentElement, { childList: true, subtree: true });
+                accept();
+            })();
+            """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        configuration.userContentController.addUserScript(acceptCookies)
         let view = WKWebView(frame: .zero, configuration: configuration)
         // Providers that select a layout on the server need a mobile user agent.
         view.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"

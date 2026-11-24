@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon
 import ServiceManagement
 import SwiftUI
@@ -9,6 +10,7 @@ struct SearchSettingsView: View {
         case size = "창 크기"
         case shortcut = "단축키"
         case history = "검색 기록"
+        case savedTerms = "저장한 용어"
         case webLogin = "웹 로그인"
         case startup = "자동 실행"
 
@@ -27,6 +29,7 @@ struct SearchSettingsView: View {
     @State private var height = ""
     @State private var shortcut = Shortcut.standard
     @State private var shortcutError: String?
+    @State private var selectionAccess = AXIsProcessTrusted()
     @State private var keyMonitor: Any?
     @State private var copied = false
     @State private var confirmHistoryDeletion = false
@@ -36,6 +39,9 @@ struct SearchSettingsView: View {
     @State private var clearedData = false
     @State private var startupStatus = SMAppService.mainApp.status
     @State private var startupError: String?
+    @AppStorage("obsidianVaultPath") private var obsidianVaultPath = ""
+    @AppStorage("clipboardFallbackApps") private var clipboardFallbackApps = ""
+    @State private var obsidianMessage: String?
 
     private var validSize: SearchState.WindowSize? {
         guard let width = Int(width), let height = Int(height),
@@ -67,6 +73,10 @@ struct SearchSettingsView: View {
                     case .size: sizeSettings
                     case .shortcut: shortcutSettings
                     case .history: historySettings
+                    case .savedTerms:
+                        SavedTermsList(store: search.savedTerms) { term in
+                            search.termEditor = TermEditor(term: term)
+                        }
                     case .webLogin: webLoginSettings
                     case .startup: startupSettings
                     }
@@ -89,6 +99,7 @@ struct SearchSettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             startupStatus = SMAppService.mainApp.status
+            selectionAccess = AXIsProcessTrusted()
         }
     }
 
@@ -214,6 +225,39 @@ struct SearchSettingsView: View {
 
     private var shortcutSettings: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let message = search.selectionMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("복사 방식 허용 앱")
+            TextField("예: com.apple.Safari md.obsidian", text: $clipboardFallbackApps)
+            Menu("허용 앱 추가") {
+                ForEach(NSWorkspace.shared.runningApplications.filter {
+                    $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+                }, id: \.processIdentifier) { app in
+                    if let id = app.bundleIdentifier {
+                        Button(app.localizedName ?? id) {
+                            var ids = clipboardFallbackApps.components(separatedBy: .whitespacesAndNewlines)
+                                .filter { !$0.isEmpty }
+                            if !ids.contains(id) { ids.append(id) }
+                            clipboardFallbackApps = ids.joined(separator: " ")
+                        }
+                    }
+                }
+            }
+            Text("선택 내용을 읽지 못할 때만 허용한 앱에 복사 단축키를 보냅니다. 앱 번들 ID를 공백으로 구분해 입력하세요. 가져온 뒤 클립보드를 복원합니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("다른 앱에서 단어를 선택한 뒤 전역 단축키를 누르면 현재 사전에서 자동 검색합니다.")
+                .foregroundStyle(.secondary)
+            if !selectionAccess {
+                Button("선택한 단어 읽기 권한 허용") {
+                    SelectedText.requestPermission()
+                    selectionAccess = AXIsProcessTrusted()
+                }
+                Text("시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 MyDic을 허용하세요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             LabeledContent("전역 단축키", value: shortcut.label)
             HStack {
                 Button(keyMonitor == nil ? "키 조합 입력" : "입력 취소") {
@@ -251,6 +295,10 @@ struct SearchSettingsView: View {
 
     private var historySettings: some View {
         VStack(alignment: .leading, spacing: 12) {
+            DisclosureGroup("Obsidian 연결") {
+                obsidianSettings.padding(.vertical, 8)
+            }
+            Divider()
             HStack {
                 Button(copied ? "복사됨" : "JSON 복사") {
                     guard let data = try? search.history.jsonData(),
@@ -317,6 +365,29 @@ struct SearchSettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var obsidianSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("보관함 폴더 경로", text: $obsidianVaultPath)
+            Text("검색 기록을 MyDic/검색 기록.md에 저장합니다. 다시 저장하면 최신 검색 기록으로 갱신합니다.")
+                .foregroundStyle(.secondary)
+            Button("검색 기록 저장") {
+                do {
+                    let vault = URL(fileURLWithPath: NSString(string: obsidianVaultPath).expandingTildeInPath)
+                    let file = try ObsidianConnection.export(search.history, to: vault)
+                    obsidianMessage = "저장 완료 · " + file.lastPathComponent
+                } catch {
+                    obsidianMessage = "저장 실패 · " + error.localizedDescription
+                }
+            }
+            .disabled(obsidianVaultPath.isEmpty)
+            Button("보관함 열기") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: obsidianVaultPath))
+            }
+            .disabled(obsidianVaultPath.isEmpty)
+            if let obsidianMessage { Text(obsidianMessage).font(.caption) }
         }
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon
 import SwiftUI
 
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let hotKey = GlobalShortcut()
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
+    private var capturingSelection = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -29,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         item.button?.setAccessibilityLabel("MyDic")
         item.button?.target = self
         item.button?.action = #selector(toggle)
-        hotKey.action = { [weak self] in self?.toggle() }
+        hotKey.action = { [weak self] in self?.searchSelection() }
         if !updateShortcut(search.shortcut) {
             item.button?.toolTip = "MyDic · 전역 단축키를 등록할 수 없음"
         }
@@ -67,15 +69,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func toggle() {
-        guard let button = statusItem?.button else { return }
         if let popover, popover.isShown {
             popover.performClose(nil)
             return
         }
 
+        openPopover()
+    }
+
+    private func searchSelection() {
+        guard !capturingSelection else { return }
+        capturingSelection = true
+        Task {
+            defer { capturingSelection = false }
+            let sourceApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let selected = await SelectedText.capture()
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == sourceApp else { return }
+            let dictionary = search.dictionary
+            if let selected {
+                search.selectionMessage = nil
+                openPopover()
+                search.select(dictionary)
+                search.query = selected
+                search.submit()
+            } else {
+                openPopover()
+                search.selectionMessage = AXIsProcessTrusted()
+                    ? "선택 내용을 읽지 못했습니다. 설정 → 단축키에서 해당 앱의 복사 방식 재시도를 허용하세요."
+                    : "시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 MyDic을 허용하세요."
+            }
+        }
+    }
+
+    private func openPopover() {
+        guard let button = statusItem?.button else { return }
+        search.prepareToOpen()
         let panel = popover ?? makePopover()
         NSApp.activate(ignoringOtherApps: true)
-        panel.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        if !panel.isShown {
+            panel.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        }
         alignBelowMenuBar()
         panel.contentViewController?.view.window?.makeKey()
         search.focusRequest += 1

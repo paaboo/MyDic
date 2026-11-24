@@ -9,6 +9,9 @@ enum Dictionary: String, CaseIterable, Identifiable, Codable {
     case terminology = "첨단기술용어"
     case scholarly = "학술·논문"
     case wikipedia = "Wikipedia"
+    case papago = "Papago"
+    case chatGPT = "ChatGPT"
+    case gemini = "Gemini"
 
     var id: Self { self }
 
@@ -22,6 +25,8 @@ enum Dictionary: String, CaseIterable, Identifiable, Codable {
         case .terminology: "검색 증강 생성"
         case .scholarly: "machine learning"
         case .wikipedia: "Seoul"
+        case .papago: "Hello"
+        case .chatGPT, .gemini: "검색 증강 생성이란?"
         }
     }
 
@@ -33,6 +38,9 @@ enum Dictionary: String, CaseIterable, Identifiable, Codable {
         case .terminology: "TTA 정보통신용어사전"
         case .scholarly: "Google Scholar"
         case .wikipedia: "English Wikipedia"
+        case .papago: "네이버 Papago"
+        case .chatGPT: "ChatGPT"
+        case .gemini: "Google Gemini"
         }
     }
 
@@ -46,6 +54,9 @@ enum Dictionary: String, CaseIterable, Identifiable, Codable {
         case .terminology: "https://terms.tta.or.kr/mobile/main.do"
         case .scholarly: "https://scholar.google.com/?hl=ko"
         case .wikipedia: "https://en.m.wikipedia.org/"
+        case .papago: "https://papago.naver.com/"
+        case .chatGPT: "https://chatgpt.com/"
+        case .gemini: "https://gemini.google.com/app"
         }
         return URL(string: address)!
     }
@@ -55,6 +66,30 @@ enum Dictionary: String, CaseIterable, Identifiable, Codable {
         url.scheme = "https"
 
         switch self {
+        case .chatGPT:
+            url.host = "chatgpt.com"
+            url.path = "/"
+            let prompt = """
+            다음 입력을 사전 및 번역 용도로 설명해 주세요.
+            단어 또는 용어라면 주요 뜻, 품사(해당하는 경우), 한국어 번역과 짧은 예문 1개를 알려 주세요.
+            한국어 입력이라면 영어 번역도 함께 알려 주세요.
+            문장이라면 자연스러운 한국어 번역(한국어 문장은 영어 번역)과 핵심 표현을 짧게 설명해 주세요.
+            확실하지 않은 뜻은 불확실하다고 밝혀 주세요. 답변은 한국어로 간결하게 작성해 주세요.
+            아래 구분선 이후는 설명할 입력입니다.
+            ---
+            \(query)
+            """
+            url.queryItems = [URLQueryItem(name: "q", value: prompt)]
+        case .gemini:
+            return homeURL
+        case .papago:
+            url.host = "papago.naver.com"
+            url.path = "/"
+            url.queryItems = [
+                URLQueryItem(name: "sk", value: "auto"),
+                URLQueryItem(name: "tk", value: "ko"),
+                URLQueryItem(name: "st", value: query)
+            ]
         case .english, .korean, .hanja:
             switch self {
             case .english: url.host = "en.dict.naver.com"
